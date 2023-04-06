@@ -1,0 +1,627 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  SERVICENAME:
+    Description: >-
+      The name of the service stack. Whenever possible, resources are named [SERVICENAME]-resource.
+    Type: String
+  INITCODEBUCKET:
+    Description: >-
+      The name of the bucket where the initial code is.
+    Type: String
+  INITZIPFILE:
+    Description: >-
+      The name of the zip-file with the initial code.
+    Type: String
+
+Resources:
+
+  # -----------------------------------------------
+  # Development Workflow
+  # -----------------------------------------------
+
+  CodeBuildPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Least privilege policy for code build.
+      ManagedPolicyName: !Sub "codebuild-${SERVICENAME}-policy"
+      Path: !Sub "/${SERVICENAME}/"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - codecommit:GitPull
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:PutImage
+              - ecr:BatchCheckLayerAvailability
+            Resource: "*"
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: >-
+        Role assumed by CodeBuild to carry out the build job.
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - codebuild.amazonaws.com
+              Action:
+                - sts:AssumeRole
+      Path: !Sub "/${SERVICENAME}/"
+      RoleName: !Sub "codebuild-${SERVICENAME}-role"
+      ManagedPolicyArns:
+        - !Ref CodeBuildPolicy
+
+  CodePipelinePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Least privilege policy for code pipeline.
+      ManagedPolicyName: !Sub "codepipeline-${SERVICENAME}-policy"
+      Path: !Sub "/${SERVICENAME}/"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - codecommit:UploadArchive
+              - codecommit:GetUploadArchiveStatus
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - codebuild:StartBuild
+              - codebuild:BatchGetBuilds
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: "*"
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: >-
+        Role assumed by CodePipeline to carry out the orchestration.
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: !Sub "/${SERVICENAME}/"
+      RoleName: !Sub "codepipeline-${SERVICENAME}-role"
+      ManagedPolicyArns:
+        - !Ref CodePipelinePolicy
+
+  # -----------------------------------------------
+  # Batch Job
+  # -----------------------------------------------
+
+  BatchJobExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Least privilege policy for execution of the batch job.
+      ManagedPolicyName: !Sub "batchjob-execution-${SERVICENAME}-policy"
+      Path: !Sub "/${SERVICENAME}/"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+            Resource: "*"
+
+  BatchJobExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: >-
+        Role assumed by the Task Definition to execute the task.
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: !Sub "/${SERVICENAME}/"
+      RoleName: !Sub "batchjob-execution-${SERVICENAME}-role"
+      ManagedPolicyArns:
+        - !Ref BatchJobExecutionPolicy
+
+  BatchJobTaskPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Least privilege policy for the task of the batch job.
+      ManagedPolicyName: !Sub "batchjob-task-${SERVICENAME}-policy"
+      Path: !Sub "/${SERVICENAME}/"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:PutObject
+              - s3:GetObject
+            Resource: "*"
+
+  BatchJobTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: >-
+        Role assumed by the Task Definition to carry out the task itself.
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: !Sub "/${SERVICENAME}/"
+      RoleName: !Sub "batchjob-task-${SERVICENAME}-role"
+      ManagedPolicyArns:
+        - !Ref BatchJobTaskPolicy
+
+  TriggerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Least privilege policy for the trigger of the run the batch job.
+      ManagedPolicyName: !Sub "trigger-${SERVICENAME}-policy"
+      Path: !Sub "/${SERVICENAME}/"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: "*"
+            Condition:
+              StringLike:
+                "iam:PassedToService": ecs-tasks.amazonaws.com
+          - Effect: Allow
+            Action:
+              - ecs:RunTask
+            Resource: "*"
+
+  TriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: >-
+        Role assumed by CloudWatch Trigger to run the batch job.
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: !Sub "/${SERVICENAME}/"
+      RoleName: !Sub "trigger-${SERVICENAME}-role"
+      ManagedPolicyArns:
+        - !Ref TriggerPolicy
+
+
+  # ------------------------
+  # Main Building Blocks
+  # ------------------------
+
+  ServiceVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/24
+      EnableDnsHostnames: true # Both necessary for PrivateDns of Endpoints
+      EnableDnsSupport: true
+
+  ServiceSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref ServiceVPC
+      MapPublicIpOnLaunch: false # Make sure that there is no public IP
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for the whole Service.
+      VpcId: !Ref ServiceVPC
+
+  ServiceSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allows HTTPS Traffic within the security group.
+      GroupId: !Ref ServiceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !GetAtt ServiceSecurityGroup.GroupId
+
+  # -----------------------------------------------
+  # Interface Endpoints for ECR and CloudWatch Logs
+  # -----------------------------------------------
+
+  EcrDockerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !Ref ServiceSecurityGroup
+      ServiceName: com.amazonaws.us-east-1.ecr.dkr
+      SubnetIds:
+        - !Ref ServiceSubnet
+      VpcEndpointType: Interface
+      VpcId: !Ref ServiceVPC
+
+  EcrApiEndpoint: # For Fargate version 1.4.0
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !Ref ServiceSecurityGroup
+      ServiceName: com.amazonaws.us-east-1.ecr.api
+      SubnetIds:
+        - !Ref ServiceSubnet
+      VpcEndpointType: Interface
+      VpcId: !Ref ServiceVPC
+
+  EcsLogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !Ref ServiceSecurityGroup
+      ServiceName: com.amazonaws.us-east-1.logs
+      SubnetIds:
+        - !Ref ServiceSubnet
+      VpcEndpointType: Interface
+      VpcId: !Ref ServiceVPC
+
+  # -----------------------------------------------
+  # Gateway Endpoint for ECR to S3
+  # -----------------------------------------------
+
+  ServiceRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ServiceVPC
+
+  ServiceRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref ServiceRouteTable
+      SubnetId: !Ref ServiceSubnet
+
+  EcrS3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      RouteTableIds:
+        - !Ref ServiceRouteTable
+      ServiceName: com.amazonaws.us-east-1.s3
+      VpcEndpointType: Gateway
+      VpcId: !Ref ServiceVPC
+
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${SERVICENAME}-data-bucket"
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${SERVICENAME}-artifact-bucket"
+
+  CodeRepo:
+    Type: AWS::CodeStar::GitHubRepository
+    Properties:
+      Code:
+        S3:
+          Bucket: !Sub "${INITCODEBUCKET}" 
+          Key: !Sub "${INITZIPFILE}"
+          ObjectVersion: "1"
+      EnableIssues: true
+      IsPrivate: true
+#      RepositoryAccessToken: '{{resolve:secretsmanager:your-secret-manager-name:SecretString:your-secret-manager-key}}'
+      RepositoryDescription: a description
+      RepositoryName: batch-jobs-on-AWS-serverless-infrastructure
+      RepositoryOwner: juggydkorn
+
+  CodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Description: >-
+        Uses the buildspec.yml file form the repo to build the docker container and pushes it to the container
+        registry.
+      Name: !Sub "${SERVICENAME}-build-project"
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:4.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: IMAGE_REPO_NAME
+            Type: PLAINTEXT
+            Value: !Ref ContainerRegistry
+          - Name: IMAGE_TAG
+            Type: PLAINTEXT
+            Value: latest
+          - Name: AWS_ACCOUNT_ID
+            Value: !Sub ${AWS::AccountId}
+            Type: PLAINTEXT
+      ServiceRole: !Sub CodeBuildRoleArn
+      Source:
+        Type: GITHUB
+        Location: 'https://github.com/juggydkorn/batch-jobs-on-AWS-serverless-infrastructure'
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${SERVICENAME}-codepipeline"
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      RoleArn: !Sub CodePipelineRoleArn
+      Stages:
+        - Name: Source
+          Actions:
+            - ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: GITHUB
+                Version: 1
+              Configuration:
+                RepositoryName: !Sub RepositoryName
+                BranchName: master
+                PollForSourceChanges: true
+              Name: SourceCodeRepo
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build
+          Actions:
+            - ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref CodeBuild
+              Name: BuildAndPushContainerImage
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+        - Name: Dev
+          Actions:
+            - Name: DevBuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: DevBuildProject
+              RunOrder: 1
+            - Name: DevApprovalAction
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: '1'
+                Provider: Manual
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 2
+        - Name: QA
+          Actions:
+            - Name: QABuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: QABuildProject
+              RunOrder: 1
+            - Name: QAApprovalAction
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: '1'
+                Provider: Manual
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 2
+        - Name: UAT
+          Actions:
+            - Name: UATBuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: UATBuildProject
+              RunOrder: 1
+            - Name: UATApprovalAction
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: '1'
+                Provider: Manual
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 2
+        - Name: Prod
+          Actions:
+            - Name: ProdBuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: ProdBuildProject
+              RunOrder: 1
+            - Name: ProdApprovalAction
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: '1'
+                Provider: Manual
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 2
+
+  ContainerRegistry:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${SERVICENAME}-registry"
+
+  ServerlessCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${SERVICENAME}-fargate-cluster"
+
+  BatchJobDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      # Configuration related to the execution environment
+      Family: !Sub "${SERVICENAME}-task"
+      ExecutionRoleArn: !Sub BatchJobExecutionRoleArn
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      # Configuration related to the specific task
+      TaskRoleArn: !Sub BatchJobTaskRoleArn
+      ContainerDefinitions:
+        - Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ContainerRegistry}:latest"
+          Name: !Sub "${SERVICENAME}-image"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: true
+              awslogs-region: us-east-1
+              awslogs-group: !Sub "${SERVICENAME}-task-log"
+              awslogs-stream-prefix: ecs
+
+  DailyTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${SERVICENAME}-trigger"
+      Description: >-
+        Trigger for Batchjob.
+      ScheduleExpression: rate(1 minute)
+      State: DISABLED
+      Targets:
+        - Arn: !GetAtt ServerlessCluster.Arn
+          Id: ECSTarget
+          EcsParameters:
+            LaunchType: FARGATE
+            NetworkConfiguration:
+              AwsVpcConfiguration:
+                AssignPublicIp: DISABLED
+                SecurityGroups:
+                  - !Sub ServiceSecurityGroup
+                Subnets:
+                  - !Sub ServiceSubnet
+            TaskCount: 1
+            TaskDefinitionArn: !Ref BatchJobDefinition
+          RoleArn: !Sub TriggerRoleArn
+
+Outputs:
+
+  CodeBuildRole:
+    Value: !GetAtt CodeBuildRole.Arn
+    Export:
+      Name: CodeBuildRoleArn
+
+  CodePipelineRole:
+    Value: !GetAtt CodePipelineRole.Arn
+    Export:
+      Name: CodePipelineRoleArn
+
+  BatchJobTaskRole:
+    Value: !GetAtt BatchJobTaskRole.Arn
+    Export:
+      Name: BatchJobTaskRoleArn
+
+  BatchJobExecutionRole:
+    Value: !GetAtt BatchJobExecutionRole.Arn
+    Export:
+      Name: BatchJobExecutionRoleArn
+
+  TriggerRole:
+    Value: !GetAtt TriggerRole.Arn
+    Export:
+      Name: TriggerRoleArn
+
+  ServiceSubnet:
+    Value: !Ref ServiceSubnet
+    Export:
+      Name: ServiceSubnet
+      
+  ServiceSecurityGroup:
+    Value: !Ref ServiceSecurityGroup
+    Export:
+      Name: ServiceSecurityGroup
